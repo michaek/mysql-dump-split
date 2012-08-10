@@ -4,6 +4,7 @@ require 'optparse'
  
 tables = []
 ignore = []
+structure_only = []
 dumpfile = ""
 
 cmds = OptionParser.new do |opts|
@@ -20,9 +21,13 @@ cmds = OptionParser.new do |opts|
   opts.on("-i", '--ignore-tables TABLES', Array, "Ignore these tables") do |i|
     ignore = i
   end
+
+  opts.on("-s", '--structure-only TABLES', Array, "Ignore data from these tables") do |s|
+    structure_only = s
+  end
   
   opts.on_tail("-h", "--help") do
-  puts opts
+    puts opts
   end
 
 end.parse!
@@ -56,19 +61,24 @@ if File.exist?(dumpfile)
   outfile = nil
   table = nil
   db = nil
+  ignore_data = false
+  dumping = false
   linecount = tablecount = starttime = 0
  
   while (line = d.gets)
+    # Must be UTF-8.
+    line = line.encode("UTF-16BE", :invalid=>:replace, :replace=>"?").encode("UTF-8")
     # Detect table changes
     if line =~ /^-- Table structure for table .(.+)./ or line =~ /^-- Dumping data for table .(.+)./
       is_new_table = table != $1
       table = $1
+      dumping = (line =~ /Dumping/) ? true : false
 
       # previous file should be closed
       if is_new_table
         outfile.close if outfile and !outfile.closed?
-
         puts("\n\nFound a new table: #{table}")
+        ignore_data = false
 
         if (tables != [] and not tables.include?(table))
           puts"`#{table}` not in list, ignoring"
@@ -77,11 +87,15 @@ if File.exist?(dumpfile)
           puts"`#{table}` will be ignored"
           table = nil
         else
+          if (structure_only != [] and structure_only.include?(table))
+            puts"`#{table}` data will be ignored"
+            ignore_data = true
+          end
           starttime = Time.now
           linecount = 0
           tablecount += 1
           outfile = File.new("#{db}_#{table}.sql", "w")
-          outfile.syswrite("USE `#{db}`;\n\n")
+          outfile.syswrite("USE `#{db}`;\n\n") unless db.nil?
         end
       end
     elsif line =~ /^-- Current Database: .(.+)./
@@ -100,7 +114,7 @@ if File.exist?(dumpfile)
  
     # Write line to outfile
     if outfile and !outfile.closed?
-      outfile.syswrite(line)
+      outfile.syswrite(line) unless ignore_data && dumping
       linecount += 1
       elapsed = Time.now.to_i - starttime.to_i + 1
       print("    writing line: #{linecount} #{outfile.stat.size.bytes_to_human} in #{elapsed} seconds #{(outfile.stat.size / elapsed).bytes_to_human}/sec                 \r")
